@@ -1,0 +1,14 @@
+[package]
+name = "know"
+version = "0.1.0"
+edition = "2021"
+description = "Local semantic search for project knowledge bases"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+fastembed = "4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+anyhow = "1"
+dirs = "5"

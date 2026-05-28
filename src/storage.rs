@@ -1,0 +1,57 @@
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+
+/// A single knowledge entry.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnowledgeEntry {
+    pub id: String,
+    pub text: String,
+}
+
+/// Stored embedding data (precomputed).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EmbeddingEntry {
+    pub id: String,
+    pub text: String,
+    pub vector: Vec<f32>,
+}
+
+/// Read knowledge.json from disk.
+pub fn read_knowledge_json<P: AsRef<Path>>(path: P) -> Result<Vec<KnowledgeEntry>> {
+    let file = std::fs::File::open(path.as_ref())
+        .with_context(|| format!("File not found: {}", path.as_ref().display()))?;
+    let reader = std::io::BufReader::new(file);
+    let entries: Vec<KnowledgeEntry> =
+        serde_json::from_reader(reader).context("knowledge.json format error — expected array of {id, text}")?;
+    Ok(entries)
+}
+
+/// Write embeddings to disk using bincode.
+pub fn write_embeddings<P: AsRef<Path>>(
+    path: P,
+    entries: &[(String, String, Vec<f32>)],
+) -> Result<()> {
+    let data: Vec<EmbeddingEntry> = entries
+        .iter()
+        .map(|(id, text, vector)| EmbeddingEntry {
+            id: id.clone(),
+            text: text.clone(),
+            vector: vector.clone(),
+        })
+        .collect();
+
+    let encoded = bincode::serialize(&data).context("Failed to serialize embeddings")?;
+    std::fs::write(path.as_ref(), encoded)
+        .with_context(|| format!("Failed to write {}", path.as_ref().display()))?;
+    Ok(())
+}
+
+/// Read embeddings from bincode file.
+pub fn read_embeddings<P: AsRef<Path>>(path: P) -> Result<Vec<EmbeddingEntry>> {
+    let encoded = std::fs::read(path.as_ref())
+        .with_context(|| format!("File not found: {}", path.as_ref().display()))?;
+    let data: Vec<EmbeddingEntry> =
+        bincode::deserialize(&encoded).context("embeddings.bin format error")?;
+    Ok(data)
+}
