@@ -1,6 +1,6 @@
 # SKILL: know — local semantic search
 
-**Version:** 5.0.0
+**Version:** 5.1.0
 **Purpose:** Persist and retrieve project knowledge across sessions
 **Files:** `knowledge.json` (source), `embeddings.bin` (Rust), `embeddings.pkl` (Python)
 
@@ -26,6 +26,16 @@ Using tags in search improves relevance and reduces noise — especially as
 the knowledge base grows.
 
 Tag filter is `AND` — entry must have ALL specified tags to match.
+
+## When NOT to use
+
+| Situation | Wrong tool | Right tool |
+|---|---|---|
+| Need entry by exact id | `knowledge_search` | `knowledge_get(id)` |
+| Entry already exists | `knowledge_add` | `knowledge_edit(id, new_text)` |
+| Need to list, not search | `knowledge_search("")` | `knowledge_list()` |
+| Just changed JSON manually | any CRUD tool | `knowledge_build()` |
+| Tags are empty | `knowledge_search(q, tags=["x"])` | omit tags or use existing ones |
 
 ## Agent workflow — PROACTIVE knowledge base usage
 

@@ -104,7 +104,7 @@ def knowledge_search(
             "query": query,
             "results": [],
             "count": 0,
-            "message": f"No relevant information found (below {threshold:.2f} threshold).",
+            "message": f"No relevant information found. Searched {len(entries)} entries" + (f" with tags {tags}" if tags else "") + f", threshold {threshold:.2f}, top {top_n}. Try lowering threshold or changing query.",
         })
 
     data = [

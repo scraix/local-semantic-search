@@ -272,9 +272,17 @@ fn cmd_search(
             .unwrap()
         );
     } else if results.is_empty() {
+        let tag_info = if !tags.is_empty() {
+            format!(" with tags [{}]", tags.join(","))
+        } else {
+            String::new()
+        };
         println!(
-            "[KNOW]: No relevant information found (below {:.2} threshold).",
-            threshold
+            "[KNOW]: No relevant information found. Searched {} entries{}, threshold {:.2}, top {}. Try lowering threshold or changing query.",
+            filtered.len(),
+            tag_info,
+            threshold,
+            top
         );
     } else {
         for (entry, score) in &results {
