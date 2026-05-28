@@ -38,5 +38,13 @@
   {
     "id": "error-handling",
     "text": "Error handling uses anyhow with context messages. File I/O errors, format errors, and embedding failures all return Results with descriptive error messages."
+  },
+  {
+    "id": "write-commands",
+    "text": "know add <id> <text> — append a new entry to knowledge.json and auto-rebuild embeddings. know list — show all entries. know remove <id> — remove entry by id and auto-rebuild. All three commands are mirrored in the Python hermes_know package for Hermes Agent: knowledge_add(id, text), knowledge_list(), knowledge_remove(id)."
+  },
+  {
+    "id": "arch-dual-sync",
+    "text": "The project maintains two parallel implementations: Rust CLI (know) and Python package (hermes_know). Both read/write the same knowledge.json. Rust uses bincode for embeddings (embeddings.bin), Python uses pickle (embeddings.pkl). They are independent — build one or both as needed."
   }
 ]

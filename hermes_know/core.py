@@ -84,6 +84,18 @@ def load_knowledge(path: str | Path = "knowledge.json") -> List[KnowledgeEntry]:
     return [KnowledgeEntry.from_dict(item) for item in raw]
 
 
+def write_knowledge(
+    entries: List[KnowledgeEntry],
+    path: str | Path = "knowledge.json",
+) -> None:
+    """Write entries to knowledge.json."""
+    path = Path(path)
+    data = [{"id": e.id, "text": e.text} for e in entries]
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
 def save_embeddings(entries: List[EmbeddingEntry], path: str | Path = "embeddings.pkl") -> None:
     """Save embeddings to pickle (Python-native format)."""
     path = Path(path)

@@ -22,9 +22,19 @@ pub fn read_knowledge_json<P: AsRef<Path>>(path: P) -> Result<Vec<KnowledgeEntry
     let file = std::fs::File::open(path.as_ref())
         .with_context(|| format!("File not found: {}", path.as_ref().display()))?;
     let reader = std::io::BufReader::new(file);
-    let entries: Vec<KnowledgeEntry> =
-        serde_json::from_reader(reader).context("knowledge.json format error — expected array of {id, text}")?;
+    let entries: Vec<KnowledgeEntry> = serde_json::from_reader(reader)
+        .context("knowledge.json format error — expected array of {id, text}")?;
     Ok(entries)
+}
+
+/// Write entries to knowledge.json.
+pub fn write_knowledge_json<P: AsRef<Path>>(path: P, entries: &[KnowledgeEntry]) -> Result<()> {
+    let file = std::fs::File::create(path.as_ref())
+        .with_context(|| format!("Failed to create {}", path.as_ref().display()))?;
+    let writer = std::io::BufWriter::new(file);
+    serde_json::to_writer_pretty(writer, entries)
+        .context("Failed to write knowledge.json")?;
+    Ok(())
 }
 
 /// Write embeddings to disk using bincode.

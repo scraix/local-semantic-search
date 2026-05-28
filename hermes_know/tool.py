@@ -1,13 +1,14 @@
 """
-Hermes Agent tool registration for ``knowledge_search`` and ``knowledge_build``.
+Hermes Agent tool registration for project knowledge base operations.
 
-Can be loaded by Hermes as a custom tool module. Registers two tools:
+Registers tools:
   1. ``knowledge_search(query, top_n, threshold)`` — semantic search
-  2. ``knowledge_build(knowledge_path=None, output_path=None)`` — rebuild
+  2. ``knowledge_build()`` — rebuild embeddings
+  3. ``knowledge_add(id, text)`` — add a new entry (auto-builds)
+  4. ``knowledge_list()`` — list all entries
+  5. ``knowledge_remove(id)`` — remove an entry by id (auto-builds)
 
-Usage in Hermes agent context:
-    >>> from hermes_know.tool import knowledge_search
-    >>> result = knowledge_search("how does search work")
+All tools read/write the same ``knowledge.json`` as the Rust CLI.
 """
 
 import json
@@ -17,11 +18,13 @@ from pathlib import Path
 from typing import Optional
 
 from .core import (
+    KnowledgeEntry,
     embed_texts,
     load_knowledge,
     load_embeddings,
     save_embeddings,
     search as _search,
+    write_knowledge,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,6 +40,19 @@ def _resolve_path(p: Optional[str], default: str) -> Path:
     return Path(p).expanduser().resolve() if p else Path(default).resolve()
 
 
+def _auto_build(knowledge_path: Path, output_path: Path) -> bool:
+    """Build embeddings if knowledge.json exists."""
+    if not knowledge_path.exists():
+        return False
+    entries = load_knowledge(str(knowledge_path))
+    if not entries:
+        return False
+    logger.info("Auto-building embeddings from %s", knowledge_path)
+    embedded = embed_texts(entries)
+    save_embeddings(embedded, str(output_path))
+    return True
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Tool functions
 # ═══════════════════════════════════════════════════════════════════════
@@ -49,54 +65,38 @@ def knowledge_search(
 ) -> str:
     """Semantic search over the project knowledge base.
 
-    Returns matching entries with similarity scores.
-    Returns JSON string with results.
+    Returns matching entries with similarity scores (JSON string).
+    Auto-builds embeddings if missing but knowledge.json exists.
 
     Args:
         query: The search query (natural language).
-        top_n: Maximum number of results to return (default: 3).
+        top_n: Maximum number of results (default: 3).
         threshold: Minimum similarity score 0.0–1.0 (default: 0.45).
-        embeddings_path: Path to embeddings file, or auto-detect.
     """
+    kp = _resolve_path(None, DEFAULT_KNOWLEDGE_JSON)
     ep = _resolve_path(embeddings_path, DEFAULT_EMBEDDINGS)
 
     if not ep.exists():
-        # Try building on-the-fly
-        kp = _resolve_path(None, DEFAULT_KNOWLEDGE_JSON)
         if kp.exists():
-            logger.info("Embeddings not found at %s — building from %s", ep, kp)
-            _do_build(str(kp), str(ep))
+            _auto_build(kp, ep)
         else:
-            return json.dumps({
-                "success": False,
-                "error": f"Embeddings file '{ep}' not found, and no knowledge.json found to build from.",
-            })
+            return _json_error(f"No knowledge.json found at {kp} — create one first.")
 
     try:
         entries = load_embeddings(str(ep))
     except Exception as e:
-        return json.dumps({
-            "success": False,
-            "error": f"Failed to load embeddings: {e}",
-        })
+        return _json_error(f"Failed to load embeddings: {e}")
 
     if not entries:
-        return json.dumps({
-            "success": False,
-            "error": "Embeddings file is empty. Run knowledge_build first.",
-        })
+        return _json_error("Embeddings file is empty. Run knowledge_build first.")
 
     try:
         results = _search(query, entries, threshold=threshold, top_n=top_n)
     except Exception as e:
-        return json.dumps({
-            "success": False,
-            "error": f"Search failed: {e}",
-        })
+        return _json_error(f"Search failed: {e}")
 
     if not results:
-        return json.dumps({
-            "success": True,
+        return _json_ok({
             "query": query,
             "results": [],
             "count": 0,
@@ -104,21 +104,15 @@ def knowledge_search(
         })
 
     data = [
-        {
-            "id": entry.id,
-            "text": entry.text,
-            "score": round(float(score), 4),
-        }
+        {"id": entry.id, "text": entry.text, "score": round(float(score), 4)}
         for entry, score in results
     ]
-
-    return json.dumps({
-        "success": True,
+    return _json_ok({
         "query": query,
         "results": data,
         "count": len(data),
         "message": f"Found {len(data)} matching entr{'y' if len(data) == 1 else 'ies'}.",
-    }, ensure_ascii=False)
+    })
 
 
 def knowledge_build(
@@ -127,12 +121,9 @@ def knowledge_build(
 ) -> str:
     """(Re)build embeddings from knowledge.json.
 
-    Use this when knowledge.json has been updated and embeddings need
-    regeneration.
+    Use when knowledge.json has been updated and embeddings need regeneration.
 
-    Args:
-        knowledge_path: Path to knowledge.json (default: auto-detect).
-        output_path: Output path for embeddings (default: auto-detect).
+    Returns JSON with build status.
     """
     kp = _resolve_path(knowledge_path, DEFAULT_KNOWLEDGE_JSON)
     op = _resolve_path(output_path, DEFAULT_EMBEDDINGS)
@@ -140,64 +131,189 @@ def knowledge_build(
     try:
         entries = load_knowledge(str(kp))
     except FileNotFoundError:
-        return json.dumps({
-            "success": False,
-            "error": f"knowledge.json not found at {kp}",
-        })
+        return _json_error(f"knowledge.json not found at {kp}")
     except Exception as e:
-        return json.dumps({
-            "success": False,
-            "error": f"Failed to read knowledge.json: {e}",
-        })
+        return _json_error(f"Failed to read knowledge.json: {e}")
 
     if not entries:
-        return json.dumps({
-            "success": True,
-            "warning": "knowledge.json is empty.",
-            "entries_built": 0,
-        })
+        return _json_ok({"warning": "knowledge.json is empty.", "entries_built": 0})
 
     try:
         embedded = embed_texts(entries)
         save_embeddings(embedded, str(op))
     except Exception as e:
-        return json.dumps({
-            "success": False,
-            "error": f"Embedding failed: {e}",
-        })
+        return _json_error(f"Embedding failed: {e}")
 
-    return json.dumps({
-        "success": True,
+    return _json_ok({
         "entries_built": len(embedded),
         "output_path": str(op),
         "dimensions": 384,
     })
 
 
-def _do_build(knowledge_path: str, output_path: str) -> None:
-    """Non-JSON build (internal use)."""
-    entries = load_knowledge(knowledge_path)
+def knowledge_add(
+    id: str,
+    text: str,
+    knowledge_path: Optional[str] = None,
+    output_path: Optional[str] = None,
+) -> str:
+    """Add a new entry to the knowledge base and rebuild embeddings.
+
+    Call this PROACTIVELY when you discover an important project-specific
+    fact that should be persisted for future sessions — architecture
+    decisions, configuration quirks, rationale behind choices, etc.
+
+    Args:
+        id: Short unique identifier (e.g. 'arch-decision', 'config-tip').
+        text: The factual content to store.
+    """
+    kp = _resolve_path(knowledge_path, DEFAULT_KNOWLEDGE_JSON)
+    op = _resolve_path(output_path, DEFAULT_EMBEDDINGS)
+
+    entries = load_knowledge(str(kp)) if kp.exists() else []
+
+    if any(e.id == id for e in entries):
+        return _json_error(f"Entry with id '{id}' already exists. Use knowledge_remove first.")
+
+    entries.append(KnowledgeEntry(id=id, text=text))
+
+    try:
+        write_knowledge(entries, str(kp))
+    except Exception as e:
+        return _json_error(f"Failed to write knowledge.json: {e}")
+
+    # Rebuild embeddings
+    try:
+        embedded = embed_texts(entries)
+        save_embeddings(embedded, str(op))
+    except Exception as e:
+        # knowledge.json was updated, but embeddings failed
+        return _json_ok({
+            "id": id,
+            "added": True,
+            "embeddings_rebuilt": False,
+            "error": str(e),
+            "message": "Entry added to knowledge.json but embedding rebuild failed. Run knowledge_build later.",
+        })
+
+    return _json_ok({
+        "id": id,
+        "added": True,
+        "embeddings_rebuilt": True,
+        "entries_count": len(embedded),
+        "message": f"Added [{id}] ({len(embedded)} entries total).",
+    })
+
+
+def knowledge_list(
+    knowledge_path: Optional[str] = None,
+) -> str:
+    """List all entries in the knowledge base.
+
+    Returns JSON with id, text preview, and count.
+    """
+    kp = _resolve_path(knowledge_path, DEFAULT_KNOWLEDGE_JSON)
+
+    if not kp.exists():
+        return _json_ok({"entries": [], "count": 0, "message": "No knowledge.json found."})
+
+    try:
+        entries = load_knowledge(str(kp))
+    except Exception as e:
+        return _json_error(f"Failed to read knowledge.json: {e}")
+
+    data = [
+        {"id": e.id, "text_preview": e.text[:100] + ("..." if len(e.text) > 100 else "")}
+        for e in entries
+    ]
+    return _json_ok({
+        "entries": data,
+        "count": len(data),
+        "message": f"{len(data)} entr{'y' if len(data) == 1 else 'ies'} in knowledge base.",
+    })
+
+
+def knowledge_remove(
+    id: str,
+    knowledge_path: Optional[str] = None,
+    output_path: Optional[str] = None,
+) -> str:
+    """Remove an entry from the knowledge base by id and rebuild embeddings.
+
+    Args:
+        id: The identifier of the entry to remove.
+    """
+    kp = _resolve_path(knowledge_path, DEFAULT_KNOWLEDGE_JSON)
+    op = _resolve_path(output_path, DEFAULT_EMBEDDINGS)
+
+    if not kp.exists():
+        return _json_error(f"knowledge.json not found at {kp}")
+
+    try:
+        entries = load_knowledge(str(kp))
+    except Exception as e:
+        return _json_error(f"Failed to read knowledge.json: {e}")
+
+    before = len(entries)
+    entries = [e for e in entries if e.id != id]
+
+    if len(entries) == before:
+        return _json_error(f"Entry with id '{id}' not found.")
+
+    try:
+        write_knowledge(entries, str(kp))
+    except Exception as e:
+        return _json_error(f"Failed to write knowledge.json: {e}")
+
+    # Rebuild or delete embeddings
+    result = {"id": id, "removed": True}
     if not entries:
-        print("knowledge.json is empty. Nothing to embed.")
-        return
-    print(f"Found {len(entries)} entries. Generating embeddings...")
-    embedded = embed_texts(entries)
-    save_embeddings(embedded, output_path)
+        # No entries left — clean up
+        op_path = Path(str(op))
+        if op_path.exists():
+            op_path.unlink()
+        result["embeddings_deleted"] = True
+        result["message"] = f"Removed [{id}]. No entries left, embeddings deleted."
+    else:
+        try:
+            embedded = embed_texts(entries)
+            save_embeddings(embedded, str(op))
+            result["embeddings_rebuilt"] = True
+            result["entries_count"] = len(embedded)
+            result["message"] = f"Removed [{id}] ({len(embedded)} entries remain)."
+        except Exception as e:
+            result["embeddings_rebuilt"] = False
+            result["error"] = str(e)
+            result["message"] = f"Removed [{id}] from knowledge.json but embeddings rebuild failed."
+
+    return _json_ok(result)
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Hermes tool registry integration (optional)
+# Helpers
 # ═══════════════════════════════════════════════════════════════════════
 
-# Tool schemas for Hermes Agent registry
+def _json_ok(data: dict) -> str:
+    """Return a success JSON response."""
+    data["success"] = True
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _json_error(msg: str) -> str:
+    """Return an error JSON response."""
+    return json.dumps({"success": False, "error": msg}, ensure_ascii=False)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Hermes tool registry integration
+# ═══════════════════════════════════════════════════════════════════════
+
 KNOWLEDGE_SEARCH_SCHEMA = {
     "name": "knowledge_search",
     "description": (
         "Semantic search over the project's local knowledge base (knowledge.json). "
-        "Use this to answer project-specific questions about architecture, decisions, "
-        "configuration, rationale, and conventions. "
         "Returns matching entries with similarity scores. "
-        "If embeddings are missing, automatically builds them from knowledge.json."
+        "CALL THIS FIRST when the user asks a project-specific question."
     ),
     "parameters": {
         "type": "object",
@@ -223,31 +339,72 @@ KNOWLEDGE_SEARCH_SCHEMA = {
 
 KNOWLEDGE_BUILD_SCHEMA = {
     "name": "knowledge_build",
+    "description": "(Re)build embeddings from knowledge.json.",
+    "parameters": {"type": "object", "properties": {}},
+}
+
+KNOWLEDGE_ADD_SCHEMA = {
+    "name": "knowledge_add",
     "description": (
-        "(Re)build embeddings from knowledge.json. "
-        "Use when knowledge.json has been updated and embeddings need regeneration."
+        "Add a new entry to the project knowledge base. "
+        "Call this PROACTIVELY when you learn a project-specific fact that "
+        "should persist across sessions — architecture, config, rationale, etc."
     ),
     "parameters": {
         "type": "object",
-        "properties": {},
+        "properties": {
+            "id": {
+                "type": "string",
+                "description": "Short unique identifier (e.g. 'arch-decision', 'config-tip')",
+            },
+            "text": {
+                "type": "string",
+                "description": "The factual content to store",
+            },
+        },
+        "required": ["id", "text"],
+    },
+}
+
+KNOWLEDGE_LIST_SCHEMA = {
+    "name": "knowledge_list",
+    "description": "List all entries in the project knowledge base.",
+    "parameters": {"type": "object", "properties": {}},
+}
+
+KNOWLEDGE_REMOVE_SCHEMA = {
+    "name": "knowledge_remove",
+    "description": "Remove an entry from the knowledge base by id.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "id": {
+                "type": "string",
+                "description": "The id of the entry to remove",
+            },
+        },
+        "required": ["id"],
     },
 }
 
 
 def _check_knowledge_available() -> bool:
-    """Check if knowledge.json exists in current directory."""
-    return Path(DEFAULT_KNOWLEDGE_JSON).exists() or Path(
-        os.environ.get("EMBEDDINGS_FILE", "embeddings.pkl")
-    ).exists()
+    """Check if knowledge files exist in the current directory."""
+    return (
+        Path(DEFAULT_KNOWLEDGE_JSON).exists()
+        or Path(os.environ.get("EMBEDDINGS_FILE", DEFAULT_EMBEDDINGS)).exists()
+    )
 
 
-# Attempt to register with Hermes tool registry when loaded in agent context
+# Attempt to register with Hermes tool registry
 try:
     from tools.registry import registry
 
+    _TOOLSET = "knowledge"
+
     registry.register(
         name="knowledge_search",
-        toolset="knowledge",
+        toolset=_TOOLSET,
         schema=KNOWLEDGE_SEARCH_SCHEMA,
         handler=lambda args, **kw: knowledge_search(
             query=args["query"],
@@ -260,16 +417,47 @@ try:
     )
     registry.register(
         name="knowledge_build",
-        toolset="knowledge",
+        toolset=_TOOLSET,
         schema=KNOWLEDGE_BUILD_SCHEMA,
         handler=lambda args, **kw: knowledge_build(),
         check_fn=_check_knowledge_available,
         emoji="🔨",
         description=KNOWLEDGE_BUILD_SCHEMA["description"],
     )
-    logger.info("knowledge tools registered with Hermes Agent")
+    registry.register(
+        name="knowledge_add",
+        toolset=_TOOLSET,
+        schema=KNOWLEDGE_ADD_SCHEMA,
+        handler=lambda args, **kw: knowledge_add(
+            id=args["id"],
+            text=args["text"],
+        ),
+        check_fn=_check_knowledge_available,
+        emoji="➕",
+        description=KNOWLEDGE_ADD_SCHEMA["description"],
+    )
+    registry.register(
+        name="knowledge_list",
+        toolset=_TOOLSET,
+        schema=KNOWLEDGE_LIST_SCHEMA,
+        handler=lambda args, **kw: knowledge_list(),
+        check_fn=_check_knowledge_available,
+        emoji="📋",
+        description=KNOWLEDGE_LIST_SCHEMA["description"],
+    )
+    registry.register(
+        name="knowledge_remove",
+        toolset=_TOOLSET,
+        schema=KNOWLEDGE_REMOVE_SCHEMA,
+        handler=lambda args, **kw: knowledge_remove(
+            id=args["id"],
+        ),
+        check_fn=_check_knowledge_available,
+        emoji="🗑️",
+        description=KNOWLEDGE_REMOVE_SCHEMA["description"],
+    )
+    logger.info("knowledge tools (5) registered with Hermes Agent")
 except ImportError:
-    # Not running inside Hermes — tools are available as direct imports
     pass
 except Exception as e:
     logger.debug("Failed to register knowledge tools: %s", e)
