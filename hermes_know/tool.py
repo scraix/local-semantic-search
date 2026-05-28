@@ -2,8 +2,8 @@
 Hermes Agent tool registration for project knowledge base operations.
 
 Registers tools:
-  1. ``knowledge_search(query, top_n, threshold)`` — semantic search
-  2. ``knowledge_get(id)`` — get a single entry by id (fast)
+  1. ``knowledge_search(query, top_n, threshold, tags)`` — semantic search (with optional tag filter)
+  2. ``knowledge_get(id)`` — get a s...[truncated]
   3. ``knowledge_add(id, text)`` — add a new entry (auto-builds)
   4. ``knowledge_edit(id, text)`` — update an existing entry (auto-builds)
   5. ``knowledge_list()`` — list all entries
@@ -63,6 +63,7 @@ def knowledge_search(
     query: str,
     top_n: int = 3,
     threshold: float = 0.45,
+    tags: Optional[list[str]] = None,
     embeddings_path: Optional[str] = None,
 ) -> str:
     """Semantic search over the project knowledge base.
@@ -74,6 +75,7 @@ def knowledge_search(
         query: The search query (natural language).
         top_n: Maximum number of results (default: 3).
         threshold: Minimum similarity score 0.0–1.0 (default: 0.45).
+        tags: Only consider entries with ALL of these tags (optional).
     """
     kp = _resolve_path(None, DEFAULT_KNOWLEDGE_JSON)
     ep = _resolve_path(embeddings_path, DEFAULT_EMBEDDINGS)
@@ -93,7 +95,7 @@ def knowledge_search(
         return _json_error("Embeddings file is empty. Run knowledge_build first.")
 
     try:
-        results = _search(query, entries, threshold=threshold, top_n=top_n)
+        results = _search(query, entries, threshold=threshold, top_n=top_n, tags=tags)
     except Exception as e:
         return _json_error(f"Search failed: {e}")
 
@@ -106,7 +108,12 @@ def knowledge_search(
         })
 
     data = [
-        {"id": entry.id, "text": entry.text, "score": round(float(score), 4)}
+        {
+            "id": entry.id,
+            "text": entry.text,
+            "tags": entry.tags,
+            "score": round(float(score), 4),
+        }
         for entry, score in results
     ]
     return _json_ok({
@@ -156,6 +163,7 @@ def knowledge_build(
 def knowledge_add(
     id: str,
     text: str,
+    tags: Optional[list[str]] = None,
     knowledge_path: Optional[str] = None,
     output_path: Optional[str] = None,
 ) -> str:
@@ -168,6 +176,7 @@ def knowledge_add(
     Args:
         id: Short unique identifier (e.g. 'arch-decision', 'config-tip').
         text: The factual content to store.
+        tags: Optional list of categorisation tags, e.g. ['arch', 'config'].
     """
     kp = _resolve_path(knowledge_path, DEFAULT_KNOWLEDGE_JSON)
     op = _resolve_path(output_path, DEFAULT_EMBEDDINGS)
@@ -175,9 +184,9 @@ def knowledge_add(
     entries = load_knowledge(str(kp)) if kp.exists() else []
 
     if any(e.id == id for e in entries):
-        return _json_error(f"Entry with id '{id}' already exists. Use knowledge_remove first.")
+        return _json_error(f"Entry with id '{id}' already exists. Use knowledge_edit to update.")
 
-    entries.append(KnowledgeEntry(id=id, text=text))
+    entries.append(KnowledgeEntry(id=id, text=text, tags=tags or []))
 
     try:
         write_knowledge(entries, str(kp))
@@ -209,10 +218,14 @@ def knowledge_add(
 
 def knowledge_list(
     knowledge_path: Optional[str] = None,
+    tags: Optional[list[str]] = None,
 ) -> str:
     """List all entries in the knowledge base.
 
-    Returns JSON with id, text preview, and count.
+    Returns JSON with id, text preview, tags, and count.
+
+    Args:
+        tags: Optional — only show entries with ALL of these tags.
     """
     kp = _resolve_path(knowledge_path, DEFAULT_KNOWLEDGE_JSON)
 
@@ -224,8 +237,17 @@ def knowledge_list(
     except Exception as e:
         return _json_error(f"Failed to read knowledge.json: {e}")
 
+    # Filter by tags
+    if tags:
+        from .core import matches_tags
+        entries = [e for e in entries if matches_tags(e.tags, tags)]
+
     data = [
-        {"id": e.id, "text_preview": e.text[:100] + ("..." if len(e.text) > 100 else "")}
+        {
+            "id": e.id,
+            "text_preview": e.text[:100] + ("..." if len(e.text) > 100 else ""),
+            "tags": e.tags,
+        }
         for e in entries
     ]
     return _json_ok({
@@ -256,7 +278,7 @@ def knowledge_get(
 
     for e in entries:
         if e.id == id:
-            return _json_ok({"id": e.id, "text": e.text})
+            return _json_ok({"id": e.id, "text": e.text, "tags": e.tags})
 
     return _json_error(f"Entry '{id}' not found.")
 
@@ -264,6 +286,7 @@ def knowledge_get(
 def knowledge_edit(
     id: str,
     text: str,
+    tags: Optional[list[str]] = None,
     knowledge_path: Optional[str] = None,
     output_path: Optional[str] = None,
 ) -> str:
@@ -274,6 +297,7 @@ def knowledge_edit(
     Args:
         id: The identifier of the entry to update.
         text: The new text content.
+        tags: Optional new tags (replaces existing). Omit to keep current.
     """
     kp = _resolve_path(knowledge_path, DEFAULT_KNOWLEDGE_JSON)
     op = _resolve_path(output_path, DEFAULT_EMBEDDINGS)
@@ -290,6 +314,8 @@ def knowledge_edit(
     for e in entries:
         if e.id == id:
             e.text = text
+            if tags is not None:
+                e.tags = tags
             found = True
             break
 
@@ -422,6 +448,12 @@ KNOWLEDGE_SEARCH_SCHEMA = {
                 "default": 0.45,
                 "description": "Minimum similarity score 0.0–1.0 (default: 0.45)",
             },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+                "description": "Filter: only entries with ALL these tags (e.g. ['arch', 'config'])",
+            },
         },
         "required": ["query"],
     },
@@ -451,6 +483,12 @@ KNOWLEDGE_ADD_SCHEMA = {
                 "type": "string",
                 "description": "The factual content to store",
             },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+                "description": "Optional categorisation tags, e.g. ['arch', 'config']",
+            },
         },
         "required": ["id", "text"],
     },
@@ -458,8 +496,18 @@ KNOWLEDGE_ADD_SCHEMA = {
 
 KNOWLEDGE_LIST_SCHEMA = {
     "name": "knowledge_list",
-    "description": "List all entries in the project knowledge base.",
-    "parameters": {"type": "object", "properties": {}},
+    "description": "List all entries in the project knowledge base. Optionally filter by tags.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+                "description": "Optional — only show entries with ALL these tags",
+            },
+        },
+    },
 }
 
 KNOWLEDGE_REMOVE_SCHEMA = {
@@ -499,7 +547,7 @@ KNOWLEDGE_GET_SCHEMA = {
 KNOWLEDGE_EDIT_SCHEMA = {
     "name": "knowledge_edit",
     "description": (
-        "Update an existing entry's text. "
+        "Update an existing entry's text and optionally its tags. "
         "Use instead of remove+add when a fact changes — one call, auto-rebuilds embeddings."
     ),
     "parameters": {
@@ -512,6 +560,12 @@ KNOWLEDGE_EDIT_SCHEMA = {
             "text": {
                 "type": "string",
                 "description": "The new text content",
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+                "description": "Optional — replace tags. Omit to keep current tags.",
             },
         },
         "required": ["id", "text"],
@@ -541,6 +595,7 @@ try:
             query=args["query"],
             top_n=args.get("top_n", 3),
             threshold=args.get("threshold", 0.45),
+            tags=args.get("tags", None),
         ),
         check_fn=_check_knowledge_available,
         emoji="📚",
@@ -562,6 +617,7 @@ try:
         handler=lambda args, **kw: knowledge_add(
             id=args["id"],
             text=args["text"],
+            tags=args.get("tags", None),
         ),
         check_fn=_check_knowledge_available,
         emoji="➕",
@@ -571,7 +627,9 @@ try:
         name="knowledge_list",
         toolset=_TOOLSET,
         schema=KNOWLEDGE_LIST_SCHEMA,
-        handler=lambda args, **kw: knowledge_list(),
+        handler=lambda args, **kw: knowledge_list(
+            tags=args.get("tags", None),
+        ),
         check_fn=_check_knowledge_available,
         emoji="📋",
         description=KNOWLEDGE_LIST_SCHEMA["description"],
@@ -600,7 +658,11 @@ try:
         name="knowledge_edit",
         toolset=_TOOLSET,
         schema=KNOWLEDGE_EDIT_SCHEMA,
-        handler=lambda args, **kw: knowledge_edit(id=args["id"], text=args["text"]),
+        handler=lambda args, **kw: knowledge_edit(
+            id=args["id"],
+            text=args["text"],
+            tags=args.get("tags", None),
+        ),
         check_fn=_check_knowledge_available,
         emoji="✏️",
         description=KNOWLEDGE_EDIT_SCHEMA["description"],

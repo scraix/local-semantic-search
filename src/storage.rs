@@ -7,6 +7,8 @@ use std::path::Path;
 pub struct KnowledgeEntry {
     pub id: String,
     pub text: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// Stored embedding data (precomputed).
@@ -14,7 +16,16 @@ pub struct KnowledgeEntry {
 pub struct EmbeddingEntry {
     pub id: String,
     pub text: String,
+    pub tags: Vec<String>,
     pub vector: Vec<f32>,
+}
+
+/// Check whether an entry's tags contain ALL the required tags.
+pub fn matches_tags(entry_tags: &[String], required: &[String]) -> bool {
+    if required.is_empty() {
+        return true;
+    }
+    required.iter().all(|r| entry_tags.iter().any(|t| t == r))
 }
 
 /// Read knowledge.json from disk.
@@ -40,13 +51,14 @@ pub fn write_knowledge_json<P: AsRef<Path>>(path: P, entries: &[KnowledgeEntry])
 /// Write embeddings to disk using bincode.
 pub fn write_embeddings<P: AsRef<Path>>(
     path: P,
-    entries: &[(String, String, Vec<f32>)],
+    entries: &[(String, String, Vec<String>, Vec<f32>)],
 ) -> Result<()> {
     let data: Vec<EmbeddingEntry> = entries
         .iter()
-        .map(|(id, text, vector)| EmbeddingEntry {
+        .map(|(id, text, tags, vector)| EmbeddingEntry {
             id: id.clone(),
             text: text.clone(),
+            tags: tags.clone(),
             vector: vector.clone(),
         })
         .collect();

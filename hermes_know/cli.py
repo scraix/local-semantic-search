@@ -3,18 +3,17 @@ CLI entry point for hermes_know.
 
 Usage:
     python -m hermes_know build [-k knowledge.json] [-o embeddings.pkl]
-    python -m hermes_know search [-e embeddings.pkl] [-t 0.45] [-n 1] [--json] <query>
+    python -m hermes_know search [--tags arch,cli] [-e embeddings.pkl] [-t 0.45] [-n 1] [--json] <query>
     python -m hermes_know get <id> [--json]
-    python -m hermes_know add <id> <text>
-    python -m hermes_know edit <id> <text>
-    python -m hermes_know list
+    python -m hermes_know add <id> <text> [--tags arch,cli]
+    python -m hermes_know edit <id> <text> [--tags new,tags]
+    python -m hermes_know list [--tags arch]
     python -m hermes_know remove <id>
 """
 
 import argparse
 import sys
 from pathlib import Path
-from typing import Optional
 
 from .core import (
     KnowledgeEntry,
@@ -25,6 +24,11 @@ from .core import (
     search,
     write_knowledge,
 )
+
+
+def _comma_tags(val: str) -> list[str]:
+    """Parse comma-separated tags from CLI arg."""
+    return [t.strip() for t in val.split(",") if t.strip()]
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -64,6 +68,10 @@ def main(argv: list[str] | None = None) -> None:
         "--json", action="store_true",
         help="Output results as JSON (for machine parsing)",
     )
+    search_parser.add_argument(
+        "--tags", type=_comma_tags, default=None,
+        help="Filter by tags, e.g. --tags arch,cli",
+    )
 
     # ── get ─────────────────────────────────────────────────────────
     get_parser = sub.add_parser("get", help="Get a single entry by id")
@@ -89,6 +97,10 @@ def main(argv: list[str] | None = None) -> None:
         "-o", "--output", default="embeddings.pkl",
         help="Output path for embeddings (default: embeddings.pkl)",
     )
+    add_parser.add_argument(
+        "--tags", type=_comma_tags, default=None,
+        help="Comma-separated tags, e.g. --tags arch,cli",
+    )
 
     # ── edit ────────────────────────────────────────────────────────
     edit_parser = sub.add_parser("edit", help="Update an existing entry")
@@ -102,12 +114,20 @@ def main(argv: list[str] | None = None) -> None:
         "-o", "--output", default="embeddings.pkl",
         help="Output path for embeddings (default: embeddings.pkl)",
     )
+    edit_parser.add_argument(
+        "--tags", type=_comma_tags, default=None,
+        help="Replace tags with new comma-separated set, e.g. --tags arch,config",
+    )
 
     # ── list ────────────────────────────────────────────────────────
     list_parser = sub.add_parser("list", help="List all entries")
     list_parser.add_argument(
         "-k", "--knowledge", default="knowledge.json",
         help="Path to knowledge.json (default: knowledge.json)",
+    )
+    list_parser.add_argument(
+        "--tags", type=_comma_tags, default=None,
+        help="Filter by tags, e.g. --tags arch",
     )
 
     # ── remove ──────────────────────────────────────────────────────
@@ -127,15 +147,15 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "build":
         _do_build(args.knowledge, args.output)
     elif args.command == "search":
-        _do_search(args.query, args.embeddings, args.threshold, args.top, args.json)
+        _do_search(args.query, args.embeddings, args.threshold, args.top, args.json, args.tags)
     elif args.command == "get":
         _do_get(args.id, args.knowledge, args.json)
     elif args.command == "add":
-        _do_add(args.id, args.text, args.knowledge, args.output)
+        _do_add(args.id, args.text, args.tags or [], args.knowledge, args.output)
     elif args.command == "edit":
-        _do_edit(args.id, args.text, args.knowledge, args.output)
+        _do_edit(args.id, args.text, args.tags, args.knowledge, args.output)
     elif args.command == "list":
-        _do_list(args.knowledge)
+        _do_list(args.knowledge, args.tags)
     elif args.command == "remove":
         _do_remove(args.id, args.knowledge, args.output)
 
@@ -162,6 +182,7 @@ def _do_search(
     threshold: float,
     top_n: int,
     json_output: bool,
+    tags: list[str] | None,
 ) -> None:
     path = Path(embeddings_path)
     if not path.exists():
@@ -173,7 +194,7 @@ def _do_search(
         print("Embeddings file is empty. Run 'build' first.")
         return
 
-    results = search(query, entries, threshold=threshold, top_n=top_n)
+    results = search(query, entries, threshold=threshold, top_n=top_n, tags=tags)
 
     if json_output:
         import json as _json
@@ -181,11 +202,15 @@ def _do_search(
             {
                 "id": entry.id,
                 "text": entry.text,
+                "tags": entry.tags,
                 "score": round(float(score), 4),
             }
             for entry, score in results
         ]
-        print(_json.dumps({"success": True, "query": query, "results": data, "count": len(data)}, ensure_ascii=False, indent=2))
+        print(_json.dumps(
+            {"success": True, "query": query, "results": data, "count": len(data)},
+            ensure_ascii=False, indent=2,
+        ))
         return
 
     if not results:
@@ -193,7 +218,8 @@ def _do_search(
     else:
         for entry, score in results:
             tag = f" [{entry.id}]" if entry.id else ""
-            print(f"[KNOW{tag}]: {entry.text} (score: {score:.3f})")
+            tags_str = f" tags:({','.join(entry.tags)})" if entry.tags else ""
+            print(f"[KNOW{tag}]: {entry.text}{tags_str} (score: {score:.3f})")
 
 
 def _do_get(id: str, knowledge_path: str, json_output: bool) -> None:
@@ -211,9 +237,13 @@ def _do_get(id: str, knowledge_path: str, json_output: bool) -> None:
         if e.id == id:
             if json_output:
                 import json as _json
-                print(_json.dumps({"success": True, "id": e.id, "text": e.text}, ensure_ascii=False, indent=2))
+                print(_json.dumps(
+                    {"success": True, "id": e.id, "text": e.text, "tags": e.tags},
+                    ensure_ascii=False, indent=2,
+                ))
             else:
-                print(f"[{e.id}]\n{e.text}")
+                tags_line = f"\ntags: {', '.join(e.tags)}" if e.tags else ""
+                print(f"[{e.id}]{tags_line}\n{e.text}")
             return
 
     if json_output:
@@ -223,24 +253,37 @@ def _do_get(id: str, knowledge_path: str, json_output: bool) -> None:
         print(f"Entry '{id}' not found.")
 
 
-def _do_add(id: str, text: str, knowledge_path: str, output_path: str) -> None:
+def _do_add(
+    id: str,
+    text: str,
+    tags: list[str],
+    knowledge_path: str,
+    output_path: str,
+) -> None:
     kp = Path(knowledge_path)
     entries = load_knowledge(kp) if kp.exists() else []
 
     if any(e.id == id for e in entries):
-        print(f"Entry with id '{id}' already exists. Use 'edit' to update, or 'remove' first.")
+        print(f"Entry with id '{id}' already exists. Use 'edit' to update.")
         sys.exit(1)
 
-    entries.append(KnowledgeEntry(id=id, text=text))
+    entries.append(KnowledgeEntry(id=id, text=text, tags=tags))
     write_knowledge(entries, kp)
-    print(f"Added: [{id}]")
+    tag_str = f" tags: {', '.join(tags)}" if tags else ""
+    print(f"Added: [{id}]{tag_str}")
 
     print("Rebuilding embeddings...")
     embedded = embed_texts(entries)
     save_embeddings(embedded, output_path)
 
 
-def _do_edit(id: str, text: str, knowledge_path: str, output_path: str) -> None:
+def _do_edit(
+    id: str,
+    text: str,
+    tags: list[str] | None,
+    knowledge_path: str,
+    output_path: str,
+) -> None:
     kp = Path(knowledge_path)
     if not kp.exists():
         print(f"Error: {knowledge_path} not found.", file=sys.stderr)
@@ -251,6 +294,8 @@ def _do_edit(id: str, text: str, knowledge_path: str, output_path: str) -> None:
     for e in entries:
         if e.id == id:
             e.text = text
+            if tags is not None:
+                e.tags = tags
             found = True
             break
 
@@ -266,21 +311,31 @@ def _do_edit(id: str, text: str, knowledge_path: str, output_path: str) -> None:
     save_embeddings(embedded, output_path)
 
 
-def _do_list(knowledge_path: str) -> None:
+def _do_list(knowledge_path: str, tags: list[str] | None) -> None:
     kp = Path(knowledge_path)
     if not kp.exists():
         print(f"No entries — {knowledge_path} not found.")
         return
 
     entries = load_knowledge(kp)
+
+    if tags:
+        from .core import matches_tags
+        entries = [e for e in entries if matches_tags(e.tags, tags)]
+
     if not entries:
-        print(f"No entries in {knowledge_path}.")
+        if tags:
+            print(f"No entries matching tags [{', '.join(tags)}] in {knowledge_path}.")
+        else:
+            print(f"No entries in {knowledge_path}.")
         return
 
-    print(f"{len(entries)} entries in {knowledge_path}:\n")
+    label = "y" if len(entries) == 1 else "ies"
+    print(f"{len(entries)} entr{label} in {knowledge_path}:\n")
     for i, entry in enumerate(entries, 1):
-        preview = entry.text[:77] + "..." if len(entry.text) > 80 else entry.text
-        print(f"  {i}. [{entry.id}] {preview}")
+        preview = entry.text[:70] + "..." if len(entry.text) > 73 else entry.text
+        tags_str = f" [{','.join(entry.tags)}]" if entry.tags else ""
+        print(f"  {i}. [{entry.id}]{tags_str} {preview}")
 
 
 def _do_remove(id: str, knowledge_path: str, output_path: str) -> None:

@@ -1,50 +1,95 @@
 [
   {
     "id": "arch-cli",
-    "text": "know is a Rust CLI tool for local semantic search over project knowledge bases. It uses clap for argument parsing with two subcommands: build (generate embeddings) and search (find best match)."
+    "text": "know is a Rust CLI tool for local semantic search over project knowledge bases. It uses clap for argument parsing with two subcommands: build (generate embeddings) and search (find best match).",
+    "tags": [
+      "arch",
+      "cli"
+    ]
   },
   {
     "id": "arch-embedding-model",
-    "text": "The project uses fastembed 4.x with the paraphrase-multilingual-MiniLM-L12-v2 model (384 dimensions). The model is auto-downloaded on first use and cached under ~/.cache/know/models/."
+    "text": "The project uses fastembed 4.x with the paraphrase-multilingual-MiniLM-L12-v2 model (384 dimensions). The model is auto-downloaded on first use and cached under ~/.cache/know/models/.",
+    "tags": [
+      "arch",
+      "config"
+    ]
   },
   {
     "id": "arch-storage",
-    "text": "Embeddings are serialized with bincode for fast I/O. Each EmbeddingEntry stores id, text, and vector (Vec<f32>). knowledge.json is plain JSON with an array of {id, text} objects."
+    "text": "Embeddings are serialized with bincode for fast I/O. Each EmbeddingEntry stores id, text, and vector (Vec<f32>). knowledge.json is plain JSON with an array of {id, text} objects.",
+    "tags": [
+      "arch",
+      "config"
+    ]
   },
   {
     "id": "arch-search",
-    "text": "Search uses cosine similarity with a configurable threshold (default 0.45). Results are filtered by threshold, sorted descending by score, and truncated to top-k (default 1). The --top (-n) flag controls how many results are returned."
+    "text": "Search uses cosine similarity with a configurable threshold (default 0.45). Results are filtered by threshold, sorted descending by score, and truncated to top-k (default 1). The --top (-n) flag controls how many results are returned.",
+    "tags": [
+      "arch",
+      "search"
+    ]
   },
   {
     "id": "arch-build",
-    "text": "The build command reads knowledge.json, generates embeddings for all entries using fastembed, and writes them to embeddings.bin. Custom input/output paths can be specified with -k/--knowledge and -o/--output."
+    "text": "The build command reads knowledge.json, generates embeddings for all entries using fastembed, and writes them to embeddings.bin. Custom input/output paths can be specified with -k/--knowledge and -o/--output.",
+    "tags": [
+      "arch",
+      "workflow"
+    ]
   },
   {
     "id": "design-decisions",
-    "text": "The project was designed to keep AI agent memory clean by offloading project-specific facts to a local file. knowledge.json can be committed to git; embeddings.bin should be gitignored (it's large and regenerable)."
+    "text": "The project was designed to keep AI agent memory clean by offloading project-specific facts to a local file. knowledge.json can be committed to git; embeddings.bin should be gitignored (it's large and regenerable).",
+    "tags": [
+      "arch",
+      "design"
+    ]
   },
   {
     "id": "output-format",
-    "text": "Search results are printed as [KNOW [id]]: text (score: 0.xxx). If no id is set, the format is [KNOW]: text (score: 0.xxx). When no results pass the threshold, it prints [KNOW]: No relevant information found (below 0.xx threshold)."
+    "text": "Search results are printed as [KNOW [id]]: text (score: 0.xxx). If no id is set, the format is [KNOW]: text (score: 0.xxx). When no results pass the threshold, it prints [KNOW]: No relevant information found (below 0.xx threshold).",
+    "tags": [
+      "cli",
+      "config"
+    ]
   },
   {
     "id": "code-structure",
-    "text": "The project has four modules: main.rs (CLI + dispatch), embed.rs (fastembed model wrapping), search.rs (cosine similarity + top-k ranking), storage.rs (JSON + bincode I/O)."
+    "text": "The project has four modules: main.rs (CLI + dispatch), embed.rs (fastembed model wrapping), search.rs (cosine similarity + top-k ranking), storage.rs (JSON + bincode I/O).",
+    "tags": [
+      "arch"
+    ]
   },
   {
     "id": "embed-model-reuse",
-    "text": "Both embed_texts and embed_query create a fresh TextEmbedding model instance each call. The model cache directory is set to ~/.cache/know/models/ via dirs::cache_dir()."
+    "text": "Both embed_texts and embed_query create a fresh TextEmbedding model instance each call. The model cache directory is set to ~/.cache/know/models/ via dirs::cache_dir().",
+    "tags": [
+      "arch",
+      "config"
+    ]
   },
   {
     "id": "error-handling",
-    "text": "Error handling uses anyhow with context messages. File I/O errors, format errors, and embedding failures all return Results with descriptive error messages."
+    "text": "Error handling uses anyhow with context messages. File I/O errors, format errors, and embedding failures all return Results with descriptive error messages.",
+    "tags": [
+      "arch"
+    ]
   },
   {
     "id": "write-commands",
-    "text": "know add <id> <text> — append a new entry to knowledge.json and auto-rebuild embeddings. know list — show all entries. know remove <id> — remove entry by id and auto-rebuild. All three commands are mirrored in the Python hermes_know package for Hermes Agent: knowledge_add(id, text), knowledge_list(), knowledge_remove(id)."
+    "text": "know add <id> <text> — append a new entry to knowledge.json and auto-rebuild embeddings. know list — show all entries. know remove <id> — remove entry by id and auto-rebuild. All three commands are mirrored in the Python hermes_know package for Hermes Agent: knowledge_add(id, text), knowledge_list(), knowledge_remove(id).",
+    "tags": [
+      "workflow",
+      "cli"
+    ]
   },
   {
     "id": "arch-dual-sync",
-    "text": "The project maintains two parallel implementations: Rust CLI (know) and Python package (hermes_know). Both read/write the same knowledge.json. Rust uses bincode for embeddings (embeddings.bin), Python uses pickle (embeddings.pkl). They are independent — build one or both as needed."
+    "text": "The project maintains two parallel implementations: Rust CLI (know) and Python package (hermes_know). Both read/write the same knowledge.json. Rust uses bincode for embeddings (embeddings.bin), Python uses pickle (embeddings.pkl). They are independent — build one or both as needed.",
+    "tags": [
+      "arch"
+    ]
   }
 ]

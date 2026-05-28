@@ -2,9 +2,10 @@ use crate::storage::EmbeddingEntry;
 
 /// Find top-k matching entries by cosine similarity.
 /// Results below threshold are excluded.
+/// Takes a slice of references (to support pre-filtered lists by tags).
 pub fn find_top<'a>(
     query_vec: &[f32],
-    entries: &'a [EmbeddingEntry],
+    entries: &[&'a EmbeddingEntry],
     threshold: f32,
     top_k: usize,
 ) -> Vec<(&'a EmbeddingEntry, f32)> {
@@ -12,7 +13,7 @@ pub fn find_top<'a>(
         .iter()
         .map(|e| {
             let score = cosine_similarity(query_vec, &e.vector);
-            (e, score)
+            (*e, score)
         })
         .filter(|(_, s)| *s >= threshold)
         .collect();

@@ -14,7 +14,7 @@ import json
 import logging
 import pickle
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -50,10 +50,15 @@ def _get_model() -> TextEmbedding:
 class KnowledgeEntry:
     id: str
     text: str
+    tags: List[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict) -> "KnowledgeEntry":
-        return cls(id=str(d.get("id", "")), text=str(d.get("text", "")))
+        return cls(
+            id=str(d.get("id", "")),
+            text=str(d.get("text", "")),
+            tags=list(d.get("tags", [])),
+        )
 
 
 @dataclass
@@ -61,17 +66,33 @@ class EmbeddingEntry:
     id: str
     text: str
     vector: np.ndarray  # shape: (384,)
+    tags: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return {"id": self.id, "text": self.text, "vector": self.vector.tolist()}
+        return {
+            "id": self.id,
+            "text": self.text,
+            "tags": self.tags,
+            "vector": self.vector.tolist(),
+        }
 
     @classmethod
     def from_dict(cls, d: dict) -> "EmbeddingEntry":
         return cls(
             id=str(d.get("id", "")),
             text=str(d.get("text", "")),
+            tags=list(d.get("tags", [])),
             vector=np.array(d["vector"], dtype=np.float32),
         )
+
+
+# ── Helpers ────────────────────────────────────────────────────────────
+
+def matches_tags(entry_tags: List[str], required: List[str]) -> bool:
+    """Check if entry has ALL required tags."""
+    if not required:
+        return True
+    return all(r in entry_tags for r in required)
 
 
 # ── I/O ────────────────────────────────────────────────────────────────
@@ -90,7 +111,12 @@ def write_knowledge(
 ) -> None:
     """Write entries to knowledge.json."""
     path = Path(path)
-    data = [{"id": e.id, "text": e.text} for e in entries]
+    data = []
+    for e in entries:
+        entry: dict = {"id": e.id, "text": e.text}
+        if e.tags:
+            entry["tags"] = e.tags
+        data.append(entry)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
         f.write("\n")
@@ -130,7 +156,9 @@ def embed_texts(
     result: List[EmbeddingEntry] = []
     for entry, vec in zip(entries, vectors):
         # vec comes as (dim,) already from fastembed
-        result.append(EmbeddingEntry(id=entry.id, text=entry.text, vector=vec))
+        result.append(
+            EmbeddingEntry(id=entry.id, text=entry.text, tags=entry.tags, vector=vec)
+        )
     return result
 
 
@@ -158,15 +186,25 @@ def search(
     entries: List[EmbeddingEntry],
     threshold: float = 0.45,
     top_n: int = 1,
+    tags: Optional[List[str]] = None,
 ) -> List[Tuple[EmbeddingEntry, float]]:
     """Search embeddings by cosine similarity.
 
+    If ``tags`` is provided, only entries containing ALL of the specified
+    tags are considered. This filtering happens before similarity computation
+    (no need to embed entries that are filtered out).
+
     Returns list of (entry, score) sorted descending, filtered by threshold.
     """
+    # Pre-filter by tags
+    filtered = entries if not tags else [e for e in entries if matches_tags(e.tags, tags)]
+    if not filtered:
+        return []
+
     query_vec = embed_query(query)
 
     scored: List[Tuple[EmbeddingEntry, float]] = []
-    for entry in entries:
+    for entry in filtered:
         score = cosine_similarity(query_vec, entry.vector)
         if score >= threshold:
             scored.append((entry, score))
