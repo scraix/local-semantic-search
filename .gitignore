@@ -5,3 +5,4 @@ embeddings.pkl
 __pycache__/
 *.pyc
 *.egg-info/
+AGENTS.md
