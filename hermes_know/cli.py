@@ -4,7 +4,9 @@ CLI entry point for hermes_know.
 Usage:
     python -m hermes_know build [-k knowledge.json] [-o embeddings.pkl]
     python -m hermes_know search [-e embeddings.pkl] [-t 0.45] [-n 1] [--json] <query>
+    python -m hermes_know get <id> [--json]
     python -m hermes_know add <id> <text>
+    python -m hermes_know edit <id> <text>
     python -m hermes_know list
     python -m hermes_know remove <id>
 """
@@ -12,6 +14,7 @@ Usage:
 import argparse
 import sys
 from pathlib import Path
+from typing import Optional
 
 from .core import (
     KnowledgeEntry,
@@ -62,6 +65,18 @@ def main(argv: list[str] | None = None) -> None:
         help="Output results as JSON (for machine parsing)",
     )
 
+    # ── get ─────────────────────────────────────────────────────────
+    get_parser = sub.add_parser("get", help="Get a single entry by id")
+    get_parser.add_argument("id", help="Entry identifier")
+    get_parser.add_argument(
+        "-k", "--knowledge", default="knowledge.json",
+        help="Path to knowledge.json (default: knowledge.json)",
+    )
+    get_parser.add_argument(
+        "--json", action="store_true",
+        help="Output as JSON",
+    )
+
     # ── add ─────────────────────────────────────────────────────────
     add_parser = sub.add_parser("add", help="Add a new entry")
     add_parser.add_argument("id", help="Entry identifier")
@@ -71,6 +86,19 @@ def main(argv: list[str] | None = None) -> None:
         help="Path to knowledge.json (default: knowledge.json)",
     )
     add_parser.add_argument(
+        "-o", "--output", default="embeddings.pkl",
+        help="Output path for embeddings (default: embeddings.pkl)",
+    )
+
+    # ── edit ────────────────────────────────────────────────────────
+    edit_parser = sub.add_parser("edit", help="Update an existing entry")
+    edit_parser.add_argument("id", help="Entry identifier to update")
+    edit_parser.add_argument("text", help="New text content")
+    edit_parser.add_argument(
+        "-k", "--knowledge", default="knowledge.json",
+        help="Path to knowledge.json (default: knowledge.json)",
+    )
+    edit_parser.add_argument(
         "-o", "--output", default="embeddings.pkl",
         help="Output path for embeddings (default: embeddings.pkl)",
     )
@@ -100,8 +128,12 @@ def main(argv: list[str] | None = None) -> None:
         _do_build(args.knowledge, args.output)
     elif args.command == "search":
         _do_search(args.query, args.embeddings, args.threshold, args.top, args.json)
+    elif args.command == "get":
+        _do_get(args.id, args.knowledge, args.json)
     elif args.command == "add":
         _do_add(args.id, args.text, args.knowledge, args.output)
+    elif args.command == "edit":
+        _do_edit(args.id, args.text, args.knowledge, args.output)
     elif args.command == "list":
         _do_list(args.knowledge)
     elif args.command == "remove":
@@ -153,7 +185,7 @@ def _do_search(
             }
             for entry, score in results
         ]
-        print(_json.dumps(data, ensure_ascii=False, indent=2))
+        print(_json.dumps({"success": True, "query": query, "results": data, "count": len(data)}, ensure_ascii=False, indent=2))
         return
 
     if not results:
@@ -164,19 +196,71 @@ def _do_search(
             print(f"[KNOW{tag}]: {entry.text} (score: {score:.3f})")
 
 
+def _do_get(id: str, knowledge_path: str, json_output: bool) -> None:
+    kp = Path(knowledge_path)
+    if not kp.exists():
+        if json_output:
+            import json as _json
+            print(_json.dumps({"success": False, "error": f"{knowledge_path} not found."}))
+        else:
+            print(f"Error: {knowledge_path} not found.", file=sys.stderr)
+        return
+
+    entries = load_knowledge(kp)
+    for e in entries:
+        if e.id == id:
+            if json_output:
+                import json as _json
+                print(_json.dumps({"success": True, "id": e.id, "text": e.text}, ensure_ascii=False, indent=2))
+            else:
+                print(f"[{e.id}]\n{e.text}")
+            return
+
+    if json_output:
+        import json as _json
+        print(_json.dumps({"success": False, "error": f"Entry '{id}' not found."}))
+    else:
+        print(f"Entry '{id}' not found.")
+
+
 def _do_add(id: str, text: str, knowledge_path: str, output_path: str) -> None:
     kp = Path(knowledge_path)
     entries = load_knowledge(kp) if kp.exists() else []
 
     if any(e.id == id for e in entries):
-        print(f"Entry with id '{id}' already exists. Use 'remove {id}' first.")
+        print(f"Entry with id '{id}' already exists. Use 'edit' to update, or 'remove' first.")
         sys.exit(1)
 
     entries.append(KnowledgeEntry(id=id, text=text))
     write_knowledge(entries, kp)
     print(f"Added: [{id}]")
 
-    # Rebuild
+    print("Rebuilding embeddings...")
+    embedded = embed_texts(entries)
+    save_embeddings(embedded, output_path)
+
+
+def _do_edit(id: str, text: str, knowledge_path: str, output_path: str) -> None:
+    kp = Path(knowledge_path)
+    if not kp.exists():
+        print(f"Error: {knowledge_path} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    entries = load_knowledge(kp)
+    found = False
+    for e in entries:
+        if e.id == id:
+            e.text = text
+            found = True
+            break
+
+    if not found:
+        print(f"Entry '{id}' not found.")
+        sys.exit(1)
+
+    write_knowledge(entries, kp)
+    print(f"Edited: [{id}]")
+
     print("Rebuilding embeddings...")
     embedded = embed_texts(entries)
     save_embeddings(embedded, output_path)

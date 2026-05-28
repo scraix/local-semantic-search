@@ -3,10 +3,12 @@ Hermes Agent tool registration for project knowledge base operations.
 
 Registers tools:
   1. ``knowledge_search(query, top_n, threshold)`` — semantic search
-  2. ``knowledge_build()`` — rebuild embeddings
+  2. ``knowledge_get(id)`` — get a single entry by id (fast)
   3. ``knowledge_add(id, text)`` — add a new entry (auto-builds)
-  4. ``knowledge_list()`` — list all entries
-  5. ``knowledge_remove(id)`` — remove an entry by id (auto-builds)
+  4. ``knowledge_edit(id, text)`` — update an existing entry (auto-builds)
+  5. ``knowledge_list()`` — list all entries
+  6. ``knowledge_remove(id)`` — remove an entry by id (auto-builds)
+  7. ``knowledge_build()`` — rebuild embeddings
 
 All tools read/write the same ``knowledge.json`` as the Rust CLI.
 """
@@ -233,6 +235,94 @@ def knowledge_list(
     })
 
 
+def knowledge_get(
+    id: str,
+    knowledge_path: Optional[str] = None,
+) -> str:
+    """Get a single entry by id (fast — no model load, no embedding).
+
+    Args:
+        id: The identifier of the entry to retrieve.
+    """
+    kp = _resolve_path(knowledge_path, DEFAULT_KNOWLEDGE_JSON)
+
+    if not kp.exists():
+        return _json_error(f"knowledge.json not found at {kp}")
+
+    try:
+        entries = load_knowledge(str(kp))
+    except Exception as e:
+        return _json_error(f"Failed to read knowledge.json: {e}")
+
+    for e in entries:
+        if e.id == id:
+            return _json_ok({"id": e.id, "text": e.text})
+
+    return _json_error(f"Entry '{id}' not found.")
+
+
+def knowledge_edit(
+    id: str,
+    text: str,
+    knowledge_path: Optional[str] = None,
+    output_path: Optional[str] = None,
+) -> str:
+    """Update an existing entry and rebuild embeddings.
+
+    Use instead of remove + add when you want to update a fact in-place.
+
+    Args:
+        id: The identifier of the entry to update.
+        text: The new text content.
+    """
+    kp = _resolve_path(knowledge_path, DEFAULT_KNOWLEDGE_JSON)
+    op = _resolve_path(output_path, DEFAULT_EMBEDDINGS)
+
+    if not kp.exists():
+        return _json_error(f"knowledge.json not found at {kp}")
+
+    try:
+        entries = load_knowledge(str(kp))
+    except Exception as e:
+        return _json_error(f"Failed to read knowledge.json: {e}")
+
+    found = False
+    for e in entries:
+        if e.id == id:
+            e.text = text
+            found = True
+            break
+
+    if not found:
+        return _json_error(f"Entry '{id}' not found.")
+
+    try:
+        write_knowledge(entries, str(kp))
+    except Exception as e:
+        return _json_error(f"Failed to write knowledge.json: {e}")
+
+    # Rebuild embeddings
+    try:
+        embedded = embed_texts(entries)
+        save_embeddings(embedded, str(op))
+    except Exception as e:
+        return _json_ok({
+            "id": id,
+            "edited": True,
+            "embeddings_rebuilt": False,
+            "error": str(e),
+            "message": "Entry updated in knowledge.json but embedding rebuild failed. Run knowledge_build later.",
+        })
+
+    return _json_ok({
+        "id": id,
+        "edited": True,
+        "embeddings_rebuilt": True,
+        "entries_count": len(embedded),
+        "message": f"Edited [{id}] ({len(embedded)} entries total).",
+    })
+
+
 def knowledge_remove(
     id: str,
     knowledge_path: Optional[str] = None,
@@ -387,6 +477,47 @@ KNOWLEDGE_REMOVE_SCHEMA = {
     },
 }
 
+KNOWLEDGE_GET_SCHEMA = {
+    "name": "knowledge_get",
+    "description": (
+        "Get a single entry by its id. "
+        "Fast — no model load. Use this when you know the id and just "
+        "need the full text, rather than searching semantically."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "id": {
+                "type": "string",
+                "description": "The id of the entry to retrieve",
+            },
+        },
+        "required": ["id"],
+    },
+}
+
+KNOWLEDGE_EDIT_SCHEMA = {
+    "name": "knowledge_edit",
+    "description": (
+        "Update an existing entry's text. "
+        "Use instead of remove+add when a fact changes — one call, auto-rebuilds embeddings."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "id": {
+                "type": "string",
+                "description": "The id of the entry to update",
+            },
+            "text": {
+                "type": "string",
+                "description": "The new text content",
+            },
+        },
+        "required": ["id", "text"],
+    },
+}
+
 
 def _check_knowledge_available() -> bool:
     """Check if knowledge files exist in the current directory."""
@@ -456,7 +587,25 @@ try:
         emoji="🗑️",
         description=KNOWLEDGE_REMOVE_SCHEMA["description"],
     )
-    logger.info("knowledge tools (5) registered with Hermes Agent")
+    registry.register(
+        name="knowledge_get",
+        toolset=_TOOLSET,
+        schema=KNOWLEDGE_GET_SCHEMA,
+        handler=lambda args, **kw: knowledge_get(id=args["id"]),
+        check_fn=_check_knowledge_available,
+        emoji="🔍",
+        description=KNOWLEDGE_GET_SCHEMA["description"],
+    )
+    registry.register(
+        name="knowledge_edit",
+        toolset=_TOOLSET,
+        schema=KNOWLEDGE_EDIT_SCHEMA,
+        handler=lambda args, **kw: knowledge_edit(id=args["id"], text=args["text"]),
+        check_fn=_check_knowledge_available,
+        emoji="✏️",
+        description=KNOWLEDGE_EDIT_SCHEMA["description"],
+    )
+    logger.info("knowledge tools (7) registered with Hermes Agent")
 except ImportError:
     pass
 except Exception as e:

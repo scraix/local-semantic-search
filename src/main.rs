@@ -10,7 +10,7 @@ mod storage;
     name = "know",
     version,
     about = "Local semantic search for project knowledge bases",
-    long_about = "know build   — generate embeddings from knowledge.json\nknow search  — find best match for a query\nknow add     — add a new entry to knowledge.json\nknow list    — list all entries\nknow remove  — remove an entry by id"
+    long_about = "know build   — generate embeddings from knowledge.json\nknow search  — find best match for a query\nknow get     — get a single entry by id\nknow add     — add a new entry\nknow edit    — update an existing entry\nknow list    — list all entries\nknow remove  — remove an entry by id"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -38,11 +38,30 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Add a new entry to knowledge.json and rebuild embeddings
-    Add {
-        /// Entry id (short identifier, no spaces)
+    /// Get a single entry by id (fast — no model load)
+    Get {
+        /// Id of the entry to retrieve
         id: String,
-        /// Entry text (the factual content)
+        #[arg(short, long, default_value = "knowledge.json")]
+        knowledge: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Add a new entry and rebuild embeddings
+    Add {
+        id: String,
+        text: String,
+        #[arg(short, long, default_value = "knowledge.json")]
+        knowledge: String,
+        #[arg(short, long, default_value = "embeddings.bin")]
+        output: String,
+    },
+    /// Update an existing entry by id and rebuild embeddings
+    Edit {
+        /// Id of the entry to update
+        id: String,
+        /// New text content
         text: String,
         #[arg(short, long, default_value = "knowledge.json")]
         knowledge: String,
@@ -56,7 +75,6 @@ enum Commands {
     },
     /// Remove an entry by id and rebuild embeddings
     Remove {
-        /// Id of the entry to remove
         id: String,
         #[arg(short, long, default_value = "knowledge.json")]
         knowledge: String,
@@ -77,12 +95,19 @@ fn main() -> Result<()> {
             top,
             json,
         } => cmd_search(&query, &embeddings, threshold, top, json)?,
+        Commands::Get { id, knowledge, json } => cmd_get(&id, &knowledge, json)?,
         Commands::Add {
             id,
             text,
             knowledge,
             output,
         } => cmd_add(&id, &text, &knowledge, &output)?,
+        Commands::Edit {
+            id,
+            text,
+            knowledge,
+            output,
+        } => cmd_edit(&id, &text, &knowledge, &output)?,
         Commands::List { knowledge } => cmd_list(&knowledge)?,
         Commands::Remove {
             id,
@@ -185,10 +210,49 @@ fn cmd_search(
     Ok(())
 }
 
+// ── Get ────────────────────────────────────────────────────────────────
+
+fn cmd_get(id: &str, knowledge_path: &str, json: bool) -> Result<()> {
+    let entries = storage::read_knowledge_json(knowledge_path)
+        .with_context(|| format!("Failed to read {}", knowledge_path))?;
+
+    match entries.iter().find(|e| e.id == id) {
+        None => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "success": false,
+                        "error": format!("Entry '{}' not found.", id),
+                    }))
+                    .unwrap()
+                );
+            } else {
+                eprintln!("Entry '{}' not found.", id);
+            }
+        }
+        Some(entry) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "success": true,
+                        "id": entry.id,
+                        "text": entry.text,
+                    }))
+                    .unwrap()
+                );
+            } else {
+                println!("[{}]\n{}", entry.id, entry.text);
+            }
+        }
+    }
+    Ok(())
+}
+
 // ── Add ────────────────────────────────────────────────────────────────
 
 fn cmd_add(id: &str, text: &str, knowledge_path: &str, output_path: &str) -> Result<()> {
-    // Read existing entries
     let mut entries = if std::fs::metadata(knowledge_path).is_ok() {
         storage::read_knowledge_json(knowledge_path)
             .with_context(|| format!("Failed to read {}", knowledge_path))?
@@ -196,24 +260,70 @@ fn cmd_add(id: &str, text: &str, knowledge_path: &str, output_path: &str) -> Res
         Vec::new()
     };
 
-    // Check for duplicate id
     if entries.iter().any(|e| e.id == id) {
-        eprintln!("Entry with id '{}' already exists. Use 'know remove {}' first, or pick another id.", id, id);
+        eprintln!(
+            "Entry with id '{}' already exists. Use 'know edit' to update, or 'know remove' first.",
+            id
+        );
         return Ok(());
     }
 
-    // Append
     entries.push(storage::KnowledgeEntry {
         id: id.to_string(),
         text: text.to_string(),
     });
 
-    // Write knowledge.json
     storage::write_knowledge_json(knowledge_path, &entries)?;
     println!("Added: [{}]", id);
     println!("Knowledge: {}", knowledge_path);
 
-    // Rebuild embeddings
+    eprintln!("Rebuilding embeddings...");
+    let text_entries: Vec<(&str, &str)> = entries
+        .iter()
+        .map(|e| (e.id.as_str(), e.text.as_str()))
+        .collect();
+    let vectors = embed::embed_texts(&text_entries)
+        .context("Embeddings generation failed")?;
+    storage::write_embeddings(output_path, &vectors)
+        .with_context(|| format!("Failed to write {}", output_path))?;
+    println!(
+        "{} updated ({} entries, {} dimensions)",
+        output_path,
+        vectors.len(),
+        vectors[0].2.len()
+    );
+    Ok(())
+}
+
+// ── Edit ───────────────────────────────────────────────────────────────
+
+fn cmd_edit(id: &str, text: &str, knowledge_path: &str, output_path: &str) -> Result<()> {
+    let mut entries = storage::read_knowledge_json(knowledge_path)
+        .with_context(|| format!("Failed to read {}", knowledge_path))?;
+
+    let before = entries.len();
+    // Update in-place
+    for entry in entries.iter_mut() {
+        if entry.id == id {
+            entry.text = text.to_string();
+            break;
+        }
+    }
+
+    if entries.len() != before {
+        // We didn't find it — length wouldn't change
+    }
+
+    // Check if actually found by looking for it
+    let found = entries.iter().any(|e| e.id == id);
+    if !found {
+        eprintln!("Entry '{}' not found.", id);
+        return Ok(());
+    }
+
+    storage::write_knowledge_json(knowledge_path, &entries)?;
+    println!("Edited: [{}]", id);
+
     eprintln!("Rebuilding embeddings...");
     let text_entries: Vec<(&str, &str)> = entries
         .iter()
@@ -269,11 +379,9 @@ fn cmd_remove(id: &str, knowledge_path: &str, output_path: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Write knowledge.json
     storage::write_knowledge_json(knowledge_path, &entries)?;
     println!("Removed: [{}]", id);
 
-    // Rebuild embeddings
     if entries.is_empty() {
         println!("No entries left — embeddings deleted.");
         let _ = std::fs::remove_file(output_path);
