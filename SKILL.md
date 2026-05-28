@@ -55,6 +55,24 @@ the user:
 - Periodically call `knowledge_list()` to survey what's stored
 - `knowledge_list(tags=["arch"])` to see entries in a specific category
 
+### End-of-session: update AGENTS.md
+
+At the end of each session (or when learning something important that isn't
+already in AGENTS.md), update `AGENTS.md` in the project root.
+
+AGENTS.md is auto-read by Hermes on session start — no need to tell the user
+to read it.
+
+Write in Caveman Compression format — stripped grammar, minimal tokens:
+```
+## fact-name
+- key: value
+- another: thing
+```
+No prose, no water. Just facts that will matter next session.
+
+Commit AGENTS.md changes to git.
+
 ## Why use this instead of Hermes memory/history
 
 - Persists across sessions — not lost on reset
